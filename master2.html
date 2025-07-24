@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Service Desk Triage Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    :root {
+      --primary: #1e40af;
+      --secondary: #22d3ee;
+      --accent: #6ee7b7;
+      --background: #e0f2fe;
+      --text: #1e293b;
+      --error: #ef4444;
+      --success: #22c55e;
+    }
+    body {
+      background-color: var(--background);
+      color: var(--text);
+      transition: all 0.3s ease;
+    }
+    .glassmorphism {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .client-table { display: none; }
+    .client-table.active { display: block; }
+    .spinner {
+      border: 4px solid rgba(0, 0, 0, 0.1);
+      border-left-color: var(--primary);
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .tooltip {
+      position: relative;
+    }
+    .tooltip:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: var(--text);
+      color: var(--background);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      white-space: nowrap;
+      z-index: 20;
+    }
+    .chart-container {
+      min-height: 300px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    }
+    .chart-container:hover {
+      transform: scale(1.02);
+      transition: transform 0.3s ease;
+    }
+    .client-header {
+      background: linear-gradient(to right, var(--primary), var(--secondary));
+    }
+    .client-header:hover {
+      background: linear-gradient(to right, var(--secondary), var(--primary));
+    }
+    .report-section textarea {
+      width: 100%;
+      min-height: 150px;
+      resize: vertical;
+      border: 1px solid var(--text);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.8);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .report-section textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 5px var(--primary);
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 12px 24px;
+      border-radius: 8px;
+      color: white;
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .toast.success { background-color: var(--success); }
+    .toast.error { background-color: var(--error); }
+    .toast.show { opacity: 1; }
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    .loading-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body class="font-sans min-h-screen">
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="spinner"></div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <div class="p-4 max-w-7xl mx-auto">
+    <h2 class="text-3xl font-extrabold text-var(--text) mb-6">Service Desk Triage Dashboard</h2>
+    <div class="glassmorphism p-4 rounded-lg mb-8">
+      <div class="flex flex-col md:flex-row gap-4 items-center">
+        <input type="file" id="fileInput" accept=".csv" class="border rounded-lg p-2 bg-white text-var(--text) shadow-sm w-full md:w-auto" aria-label="Upload CSV file">
+        <select id="statusFilter" class="border rounded-lg p-2 bg-white text-var(--text) shadow-sm" aria-label="Filter by status">
+          <option value="">All Statuses</option>
+        </select>
+        <select id="priorityFilter" class="border rounded-lg p-2 bg-white text-var(--text) shadow-sm" aria-label="Filter by priority">
+          <option value="">All Priorities</option>
+        </select>
+        <select id="assigneeFilter" class="border rounded-lg p-2 bg-white text-var(--text) shadow-sm" aria-label="Filter by assignee">
+          <option value="">All Assignees</option>
+        </select>
+      </div>
+      <div id="progressBar" class="h-1 bg-var(--primary) w-0 mt-2"></div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+      <div class="chart-container bg-white p-4 rounded-lg" role="region" aria-label="Status chart"><div id="statusChart"></div></div>
+      <div class="chart-container bg-white p-4 rounded-lg" role="region" aria-label="Priority chart"><div id="priorityChart"></div></div>
+      <div class="chart-container bg-white p-4 rounded-lg" role="region" aria-label="Assignee chart"><div id="assigneeChart"></div></div>
+      <div class="chart-container bg-white p-4 rounded-lg" role="region" aria-label="Ticket aging chart"><div id="ticketAgingChart"></div></div>
+      <div class="chart-container bg-white p-4 rounded-lg" role="region" aria-label="Client chart"><div id="clientChart"></div></div>
+    </div>
+
+    <h3 class="text-2xl font-semibold text-var(--text) mb-4">Ticket Descriptions</h3>
+    <div class="bg-white rounded-lg shadow-lg overflow-hidden glassmorphism mb-8">
+      <table class="w-full text-sm text-var(--text)" role="grid" aria-label="Ticket descriptions table">
+        <tbody id="ticketTableBody"></tbody>
+      </table>
+    </div>
+
+    <h3 class="text-2xl font-semibold text-var(--text) mb-4">Delivery Handover Report</h3>
+    <div class="report-section bg-white rounded-lg shadow-lg p-4 glassmorphism">
+      <textarea id="handoverReport" class="report-textarea" aria-label="Delivery Handover Report" placeholder="Enter your handover report details here..."></textarea>
+      <button id="saveReportBtn" class="mt-2 bg-var(--primary) text-white px-4 py-2 rounded-lg shadow hover:bg-var(--secondary) tooltip" data-tooltip="Save report to local storage" aria-label="Save report">Save Report</button>
+    </div>
+  </div>
+
+  <script>
+    let allTickets = [];
+    let filteredTickets = [];
+
+    const defaultReportText = `**Delivery Handover Report**\n\n1. **Summary**: All critical tickets have been triaged and assigned.\n2. **Action Items**:\n   - Follow up on high-priority tickets with Client A.\n   - Schedule review for In Progress tickets.\n3. **Notes**:\n   - Ensure assignees update ticket statuses by EOD.\n   - Escalate any unresolved issues to the service desk lead.\n\nPrepared by: Your Name, Date: 2025-07-19`;
+
+    function showToast(message, type = 'success') {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = `toast ${type} show`;
+      setTimeout(() => toast.className = `toast ${type}`, 3000);
+    }
+
+    function showLoading(show) {
+      document.getElementById('loadingOverlay').classList.toggle('active', show);
+    }
+
+    function csvToJson(file, callback) {
+      showLoading(true);
+      Papa.parse(file, {
+        complete: (result) => {
+          try {
+            const data = result.data;
+            console.log('Parsed CSV Data:', data);
+            if (data.length < 1) throw new Error('CSV file is empty');
+            const headers = Object.keys(data[0]);
+            const requiredHeaders = ['Issue key', 'Summary', 'Status', 'Priority', 'Assignee', 'Created', 'Updated'];
+            const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
+            if (missingHeaders.length > 0) throw new Error(`Missing required headers: ${missingHeaders.join(', ')}`);
+
+            const tickets = data.filter(row => row['Issue key'] && row.Summary);
+            console.log('Processed Tickets:', tickets);
+            callback(tickets);
+          } catch (error) {
+            console.error('CSV Parsing Error:', error);
+            showToast(`Error parsing CSV: ${error.message}`, 'error');
+            callback([]);
+          } finally {
+            showLoading(false);
+          }
+        },
+        header: true,
+        skipEmptyLines: true,
+        delimiter: ',' // Adjust if your CSV uses a different delimiter (e.g., ';')
+      });
+    }
+
+    function toggleSection(id) {
+      const table = document.getElementById('section-' + id);
+      table.classList.toggle('active');
+      const header = table.previousElementSibling;
+      header.setAttribute('aria-expanded', table.classList.contains('active'));
+    }
+
+    function updateFilters(tickets) {
+      const statusFilter = document.getElementById('statusFilter');
+      const priorityFilter = document.getElementById('priorityFilter');
+      const assigneeFilter = document.getElementById('assigneeFilter');
+
+      const statuses = [...new Set(tickets.map(t => t.Status).filter(Boolean))].sort();
+      const priorities = [...new Set(tickets.map(t => t.Priority).filter(Boolean))].sort();
+      const assignees = [...new Set(tickets.map(t => t.Assignee).filter(Boolean))].sort();
+
+      statusFilter.innerHTML = '<option value="">All Statuses</option>' + statuses.map(s => `<option value="${s}">${s}</option>`).join('');
+      priorityFilter.innerHTML = '<option value="">All Priorities</option>' + priorities.map(p => `<option value="${p}">${p}</option>`).join('');
+      assigneeFilter.innerHTML = '<option value="">All Assignees</option>' + assignees.map(a => `<option value="${a}">${a}</option>`).join('');
+    }
+
+    function applyFilters() {
+      const status = document.getElementById('statusFilter').value;
+      const priority = document.getElementById('priorityFilter').value;
+      const assignee = document.getElementById('assigneeFilter').value;
+
+      filteredTickets = allTickets.filter(ticket => {
+        const statusMatch = !status || ticket.Status === status;
+        const priorityMatch = !priority || ticket.Priority === priority;
+        const assigneeMatch = !assignee || ticket.Assignee === assignee;
+        return statusMatch && priorityMatch && assigneeMatch;
+      });
+
+      console.log('Filtered Tickets:', filteredTickets);
+      renderDashboard(filteredTickets);
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const progressBar = document.getElementById('progressBar');
+      progressBar.style.width = '0%';
+      csvToJson(file, (tickets) => {
+        allTickets = tickets.filter(ticket => {
+          const status = ticket.Status ? ticket.Status.toLowerCase() : '';
+          return !['done', 'closed', 'resolved', 'closed by customer'].includes(status);
+        });
+        filteredTickets = [...allTickets];
+        console.log('All Tickets:', allTickets);
+        updateFilters(filteredTickets);
+        applyFilters();
+        showToast('CSV uploaded successfully', 'success');
+      });
+    });
+
+    document.getElementById('saveReportBtn').addEventListener('click', () => {
+      const reportText = document.getElementById('handoverReport').value;
+      localStorage.setItem('handoverReport', reportText);
+      showToast('Handover report saved!', 'success');
+    });
+
+    ['statusFilter', 'priorityFilter', 'assigneeFilter'].forEach(id => {
+      document.getElementById(id).addEventListener('change', applyFilters);
+    });
+
+    // Load report from localStorage
+    document.getElementById('handoverReport').value = localStorage.getItem('handoverReport') || defaultReportText;
+
+    function renderDashboard(tickets) {
+      const statusCounts = {};
+      const priorityCounts = {};
+      const assigneeCounts = {};
+      const clientCounts = {};
+      const agingCounts = { '0-1 days': 0, '1-3 days': 0, '3-7 days': 0, '>7 days': 0 };
+      const now = new Date();
+
+      const groupedTickets = {};
+      tickets.forEach(ticket => {
+        const clientMatch = ticket.Summary.match(/\[(.*?)\]/);
+        const client = clientMatch ? clientMatch[1] : 'Unknown';
+        if (!groupedTickets[client]) groupedTickets[client] = [];
+        groupedTickets[client].push(ticket);
+        clientCounts[client] = (clientCounts[client] || 0) + 1;
+
+        statusCounts[ticket.Status] = (statusCounts[ticket.Status] || 0) + 1;
+        priorityCounts[ticket.Priority] = (priorityCounts[ticket.Priority] || 0) + 1;
+        assigneeCounts[ticket.Assignee] = (assigneeCounts[ticket.Assignee] || 0) + 1;
+
+        const created = new Date(ticket.Created);
+        if (!isNaN(created)) {
+          const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+          if (diffDays <= 1) agingCounts['0-1 days']++;
+          else if (diffDays <= 3) agingCounts['1-3 days']++;
+          else if (diffDays <= 7) agingCounts['3-7 days']++;
+          else agingCounts['>7 days']++;
+        }
+      });
+
+      console.log('Chart Data:', { statusCounts, priorityCounts, assigneeCounts, clientCounts, agingCounts });
+      console.log('Grouped Tickets:', groupedTickets);
+
+      const ticketTableBody = document.getElementById('ticketTableBody');
+      ticketTableBody.innerHTML = '';
+
+      Object.entries(groupedTickets).forEach(([client, tickets], idx) => {
+        const section = document.createElement('tr');
+        section.classList.add('client-section');
+        section.setAttribute('data-client', client);
+        section.innerHTML = `
+          <td colspan="7">
+            <div class="client-header text-white p-4 flex justify-between items-center cursor-pointer transition-colors" onclick="toggleSection('${idx}')" aria-expanded="false" aria-controls="section-${idx}">
+              <span class="font-semibold text-lg">Client: ${client}</span>
+            </div>
+            <div class="client-table" id="section-${idx}">
+              <table class="w-full text-sm text-var(--text)">
+                <thead>
+                  <tr class="bg-var(--accent)">
+                    <th class="p-3 font-semibold">Issue Key</th>
+                    <th class="p-3 font-semibold">Summary</th>
+                    <th class="p-3 font-semibold">Status</th>
+                    <th class="p-3 font-semibold">Priority</th>
+                    <th class="p-3 font-semibold">Assignee</th>
+                    <th class="p-3 font-semibold">Created</th>
+                    <th class="p-3 font-semibold">Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${tickets.map(ticket => `
+                    <tr class="hover:bg-var(--accent) hover:bg-opacity-20 transition-colors">
+                      <td class="p-3">${ticket['Issue key'] || '-'}</td>
+                      <td class="p-3">${ticket.Summary || '-'}</td>
+                      <td class="p-3">${ticket.Status || '-'}</td>
+                      <td class="p-3">${ticket.Priority || '-'}</td>
+                      <td class="p-3">${ticket.Assignee || '-'}</td>
+                      <td class="p-3">${ticket.Created || '-'}</td>
+                      <td class="p-3">${ticket.Updated || '-'}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </td>
+        `;
+        ticketTableBody.appendChild(section);
+      });
+
+      const chartLayout = {
+        font: { family: 'Arial, sans-serif', color: getComputedStyle(document.documentElement).getPropertyValue('--text') },
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        margin: { t: 60, b: 60, l: 50, r: 50 },
+        showlegend: false,
+        title: { font: { size: 20 } }
+      };
+
+      const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary');
+      const secondaryColor = getComputedStyle(document.documentElement).getPropertyValue('--secondary');
+      const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+
+      // Status Chart
+      Plotly.newPlot('statusChart', [{
+        x: Object.keys(statusCounts).length ? Object.keys(statusCounts) : ['No Data'],
+        y: Object.keys(statusCounts).length ? Object.values(statusCounts) : [0],
+        type: 'bar',
+        marker: { color: primaryColor },
+        hovertemplate: '<b>%{x}</b>: %{y}<extra></extra>',
+        text: Object.keys(statusCounts).length ? Object.values(statusCounts) : [0],
+        textposition: 'auto'
+      }], {
+        ...chartLayout,
+        title: { text: 'Tickets by Status' },
+        xaxis: { tickangle: 45 }
+      }).then(() => console.log('Status chart rendered')).catch(err => console.error('Status Chart Error:', err));
+
+      // Priority Chart
+      Plotly.newPlot('priorityChart', [{
+        labels: Object.keys(priorityCounts).length ? Object.keys(priorityCounts) : ['No Data'],
+        values: Object.keys(priorityCounts).length ? Object.values(priorityCounts) : [0],
+        type: 'pie',
+        hole: 0.4,
+        marker: { colors: [primaryColor, secondaryColor, accentColor, '#9ca3af'] },
+        hovertemplate: '<b>%{label}</b>: %{value}<extra></extra>',
+        textinfo: 'percent+label',
+        textposition: 'inside'
+      }], {
+        ...chartLayout,
+        title: { text: 'Tickets by Priority' }
+      }).then(() => console.log('Priority chart rendered')).catch(err => console.error('Priority Chart Error:', err));
+
+      // Assignee Chart
+      Plotly.newPlot('assigneeChart', [{
+        x: Object.keys(assigneeCounts).length ? Object.values(assigneeCounts) : [0],
+        y: Object.keys(assigneeCounts).length ? Object.keys(assigneeCounts) : ['No Data'],
+        type: 'bar',
+        orientation: 'h',
+        marker: { color: accentColor },
+        hovertemplate: '<b>%{y}</b>: %{x}<extra></extra>',
+        text: Object.keys(assigneeCounts).length ? Object.values(assigneeCounts) : [0],
+        textposition: 'auto'
+      }], {
+        ...chartLayout,
+        title: { text: 'Tickets by Assignee' },
+        yaxis: { automargin: true }
+      }).then(() => console.log('Assignee chart rendered')).catch(err => console.error('Assignee Chart Error:', err));
+
+      // Ticket Aging Chart
+      Plotly.newPlot('ticketAgingChart', [{
+        x: Object.keys(agingCounts),
+        y: Object.values(agingCounts),
+        type: 'bar',
+        marker: { color: secondaryColor },
+        hovertemplate: '<b>%{x}</b>: %{y}<extra></extra>',
+        text: Object.values(agingCounts),
+        textposition: 'auto'
+      }], {
+        ...chartLayout,
+        title: { text: 'Tickets by Age (Days)' }
+      }).then(() => console.log('Aging chart rendered')).catch(err => console.error('Aging Chart Error:', err));
+
+      // Client Chart (2D Bar)
+      Plotly.newPlot('clientChart', [{
+        x: Object.keys(clientCounts).length ? Object.keys(clientCounts) : ['No Data'],
+        y: Object.keys(clientCounts).length ? Object.values(clientCounts) : [0],
+        type: 'bar',
+        marker: { color: primaryColor },
+        hovertemplate: '<b>%{x}</b>: %{y}<extra></extra>',
+        text: Object.keys(clientCounts).length ? Object.values(clientCounts) : [0],
+        textposition: 'auto'
+      }], {
+        ...chartLayout,
+        title: { text: 'Tickets by Client' },
+        xaxis: { tickangle: 45 }
+      }).then(() => console.log('Client chart rendered')).catch(err => console.error('Client Chart Error:', err));
+    }
+  </script>
+</body>
+</html>
